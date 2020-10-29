@@ -1,9 +1,11 @@
 package fix
 
+import java.util.concurrent.ConcurrentHashMap
+
 import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
-import scala.util.Try
+import scala.util.control.NonFatal
 
 import metaconfig.Configured
 import scala.meta.Import
@@ -225,7 +227,7 @@ class OrganizeImports(config: OrganizeImportsConfig) extends SemanticRule("Organ
       // The top qualifier itself is `_root_`, e.g.: `import _root_.scala.util`
       || topQualifier.value == "_root_"
 
-      // Issue #64: Sometimes, the symbol of the top qualifier can be missing due to unknwon reasons
+      // Issue #64: Sometimes, the symbol of the top qualifier can be missing due to unknown reasons
       // (see https://github.com/liancheng/scalafix-organize-imports/issues/64). In this case, we
       // issue a warning and continue processing assuming that the top qualifier is fully-qualified.
       || topQualifierSymbol.isNone && {
@@ -738,6 +740,9 @@ object OrganizeImports {
     Patch.addLeft(token, indentedOutput mkString "\n")
   }
 
+  private[this] val symbolInfoCache =
+    new ConcurrentHashMap[(Symbol, SemanticDocument), Option[SymbolInformation]]
+
   implicit private class SymbolExtension(symbol: Symbol) {
 
     /**
@@ -747,8 +752,21 @@ object OrganizeImports {
      *
      * See [[https://github.com/scalacenter/scalafix/issues/1123 issue #1123]].
      */
-    def infoNoThrow(implicit doc: SemanticDocument): Option[SymbolInformation] =
-      Try(symbol.info).toOption.flatten
+    def infoNoThrow(implicit doc: SemanticDocument): Option[SymbolInformation] = {
+      symbolInfoCache.computeIfAbsent(
+        (symbol, doc),
+        {
+          case (sym, d) => {
+            try {
+              sym.info(d)
+            } catch {
+              case NonFatal(_) =>
+                None
+            }
+          }
+        }
+      )
+    }
   }
 
   implicit private class ImporterExtension(importer: Importer) {
